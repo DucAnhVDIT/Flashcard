@@ -34,9 +34,10 @@ export function FileUpload({ onFlashcardsGenerated }: FileUploadProps) {
       const arrayBuffer = await file.arrayBuffer();
       const text = await extractTextFromPDF(arrayBuffer);
       console.log('Extracted text:', text);
-      console.log('text length:', text.length);
-      // TODO: Process the extracted text and generate flashcards
-      // onFlashcardsGenerated(generatedFlashcards);    
+      
+      const generatedFlashcards = await generateFlashcardsWithAI(text);
+      console.log('Generated flashcards:', generatedFlashcards);
+      onFlashcardsGenerated(generatedFlashcards);
     } catch (error) {
       console.error('Error processing PDF:', error);
     }
@@ -91,6 +92,85 @@ export function FileUpload({ onFlashcardsGenerated }: FileUploadProps) {
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       handleFile(e.dataTransfer.files[0]);
     }
+  };
+
+  const generateFlashcardsWithAI = async (text: string): Promise<Flashcard[]> => {
+    const maxRetries = 3;
+    let retries = 0;
+
+    const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+    while (retries < maxRetries) {
+      try {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.NEXT_PUBLIC_OPENAI_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: "gpt-3.5-turbo",
+            messages: [
+              {
+                role: "system",
+                content: "You are a helpful assistant that generates flashcards from given text."
+              },
+              {
+                role: "user",
+                content: `Generate flashcards from the following text. Format the output as a JSON array of objects, each with 'question' and 'answer' properties: ${text}`
+              }
+            ],
+          }),
+        });
+
+        if (response.status === 429) {
+          const retryAfter = response.headers.get('Retry-After');
+          const delayMs = retryAfter ? parseInt(retryAfter) * 1000 : 1000 * Math.pow(2, retries);
+          console.log(`Rate limited. Retrying after ${delayMs}ms`);
+          await delay(delayMs);
+          retries++;
+          continue;
+        }
+
+        if (!response.ok) {
+          throw new Error(`Failed to generate flashcards: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        const flashcardsData = JSON.parse(data.choices[0].message.content);
+        return flashcardsData.map((card: any, index: number) => ({
+          id: `card-${index}`,
+          question: card.question,
+          answer: card.answer,
+        }));
+      } catch (error) {
+        console.error('Error generating flashcards:', error);
+        if (retries === maxRetries - 1) {
+          return [];
+        }
+        retries++;
+        await delay(1000 * Math.pow(2, retries));
+      }
+    }
+
+    return [];
+  };
+
+  const generateFlashcards = (text: string): Flashcard[] => {
+    const sentences = text.split(/[.!?]+/).filter(sentence => sentence.trim().length > 0);
+    const flashcards: Flashcard[] = [];
+
+    for (let i = 0; i < sentences.length; i += 2) {
+      if (i + 1 < sentences.length) {
+        flashcards.push({
+          id: `card-${i}`,
+          question: sentences[i].trim(),
+          answer: sentences[i + 1].trim()
+        });
+      }
+    }
+
+    return flashcards;
   };
 
   return (
